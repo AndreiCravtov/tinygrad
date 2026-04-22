@@ -156,6 +156,13 @@ class Tensor(OpMixin):
   @suppress_finalizing
   def __del__(self): all_tensors.pop(weakref.ref(self), None)
 
+  @staticmethod
+  def _from_uop_unchecked(uop:UOp, requires_grad:bool|None=False) -> Tensor:
+    ret = Tensor.__new__(Tensor)
+    ret.uop, ret.grad, ret.requires_grad = uop, None, requires_grad
+    all_tensors[weakref.ref(ret)] = None
+    return ret
+
   def _apply_uop(self, fxn:Callable[..., UOp], *x:Tensor, extra_args=(), **kwargs) -> Tensor:
     srcs = (self,)+x
     new_uop: UOp = fxn(*[t.uop for t in srcs], *extra_args, **kwargs)
@@ -584,6 +591,39 @@ class Tensor(OpMixin):
     if byte_offset: buf._buf.offset = byte_offset
     if owner is not None: setattr(buf, "_external_owner", owner)
     return r
+
+  @staticmethod
+  def _unsafe_from_metal_buffer_fast(mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
+                                     buffer_nbytes:int|None=None, owner:Any|None=None) -> Tensor:
+    """
+    Build a METAL tensor that aliases an existing `MTLBuffer*` with less Python
+    overhead than `_unsafe_from_metal_buffer`.
+
+    This is intentionally unsafe and only meant for private interop /
+    benchmarking code.
+    """
+    _dtype = to_dtype(dtype)
+    assert all(isinstance(dim, int) for dim in shape), f"shape must be concrete, got {shape!r}"
+    assert byte_offset >= 0, f"byte_offset must be non-negative, got {byte_offset}"
+    assert byte_offset % _dtype.itemsize == 0, f"byte_offset {byte_offset} must be aligned to dtype itemsize {_dtype.itemsize}"
+    needed_nbytes = prod(shape) * _dtype.itemsize
+    if buffer_nbytes is not None:
+      assert buffer_nbytes % _dtype.itemsize == 0, \
+        f"buffer_nbytes {buffer_nbytes} must align to dtype itemsize {_dtype.itemsize}"
+      assert byte_offset + needed_nbytes <= buffer_nbytes, \
+        f"requested view exceeds backing buffer: need {needed_nbytes} bytes at offset {byte_offset}, buffer has {buffer_nbytes}"
+      backing_elems = buffer_nbytes // _dtype.itemsize
+    else:
+      backing_elems = (byte_offset // _dtype.itemsize) + prod(shape)
+
+    base = UOp.new_buffer("METAL", backing_elems, _dtype)
+    base_buf = cast(Buffer, base.buffer).allocate(external_ptr=mtl_buffer_ptr)
+    if owner is not None: setattr(base_buf, "_external_owner", owner)
+
+    if byte_offset:
+      view = UOp(Ops.BUFFER_VIEW, _dtype, (base,), (prod(shape), byte_offset // _dtype.itemsize))
+      return Tensor._from_uop_unchecked(view.reshape(shape), requires_grad=False)
+    return Tensor._from_uop_unchecked(base.reshape(shape), requires_grad=False)
 
   @staticmethod
   def from_url(url:str, gunzip:bool=False, **kwargs) -> Tensor:
