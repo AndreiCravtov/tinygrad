@@ -334,6 +334,30 @@ class Tensor(OpMixin):
     assert self.dtype.base.fmt != "e" or sys.version_info >= (3, 12)
     return self._buffer().as_memoryview().cast(self.dtype.base.fmt, self.shape)
 
+  def _unsafe_metal_storage(self) -> dict[str, Any]:
+    """
+    Export low-level Metal storage metadata for private interop / benchmarking.
+
+    The tensor must already be realized and backed by a contiguous Metal buffer.
+    """
+    assert self.device == "METAL", f"expected METAL tensor, got {self.device}"
+    assert all_int(self.shape), f"shape must be concrete, got {self.shape=}"
+    assert self.uop.has_buffer_identity(), "tensor does not have direct buffer identity"
+    assert self.uop._base_buffer_is_realized(), "tensor must already be realized"
+    offset = self.uop.contiguous_view_offset()
+    assert offset is not None, "only contiguous tensors / views are supported"
+    buf = cast(Buffer, self.uop.buffer).ensure_allocated()
+    raw_ptr = buf._buf.buf.contents()
+    raw_addr = raw_ptr.value if hasattr(raw_ptr, "value") else raw_ptr
+    return {
+      "mtl_buffer_ptr": cast(int, buf._buf.buf.value),
+      "raw_ptr": cast(int, raw_addr) + buf._buf.offset,
+      "offset_bytes": buf._buf.offset,
+      "shape": self.shape,
+      "dtype": self.dtype.base,
+      "nbytes": self.nbytes(),
+    }
+
   def item(self) -> PyConst:
     """
     Returns the value of this tensor as a standard Python number.
@@ -536,6 +560,25 @@ class Tensor(OpMixin):
     r = Tensor.empty(*shape, **kwargs)
     assert isinstance(r.device, str)
     cast(Buffer, r.uop.buffer).allocate(external_ptr=ptr)
+    return r
+
+  @staticmethod
+  def _unsafe_from_metal_buffer(mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
+                                owner:Any|None=None, **kwargs) -> Tensor:
+    """
+    Build a METAL tensor that aliases an existing `MTLBuffer*`.
+
+    This is intentionally unsafe and only meant for private interop /
+    benchmarking code.
+    """
+    _dtype = to_dtype(dtype)
+    assert all(isinstance(dim, int) for dim in shape), f"shape must be concrete, got {shape!r}"
+    assert byte_offset >= 0, f"byte_offset must be non-negative, got {byte_offset}"
+    assert byte_offset % _dtype.itemsize == 0, f"byte_offset {byte_offset} must be aligned to dtype itemsize {_dtype.itemsize}"
+    r = Tensor.empty(*shape, dtype=_dtype, device="METAL", **kwargs)
+    buf = cast(Buffer, r.uop.buffer).allocate(external_ptr=mtl_buffer_ptr)
+    if byte_offset: buf._buf.offset = byte_offset
+    if owner is not None: setattr(buf, "_external_owner", owner)
     return r
 
   @staticmethod
