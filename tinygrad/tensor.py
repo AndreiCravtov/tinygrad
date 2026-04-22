@@ -564,7 +564,7 @@ class Tensor(OpMixin):
 
   @staticmethod
   def _unsafe_from_metal_buffer(mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
-                                owner:Any|None=None, **kwargs) -> Tensor:
+                                buffer_nbytes:int|None=None, owner:Any|None=None, **kwargs) -> Tensor:
     """
     Build a METAL tensor that aliases an existing `MTLBuffer*`.
 
@@ -575,6 +575,10 @@ class Tensor(OpMixin):
     assert all(isinstance(dim, int) for dim in shape), f"shape must be concrete, got {shape!r}"
     assert byte_offset >= 0, f"byte_offset must be non-negative, got {byte_offset}"
     assert byte_offset % _dtype.itemsize == 0, f"byte_offset {byte_offset} must be aligned to dtype itemsize {_dtype.itemsize}"
+    if buffer_nbytes is not None:
+      needed_nbytes = prod(shape) * _dtype.itemsize
+      assert byte_offset + needed_nbytes <= buffer_nbytes, \
+        f"requested view exceeds backing buffer: need {needed_nbytes} bytes at offset {byte_offset}, buffer has {buffer_nbytes}"
     r = Tensor.empty(*shape, dtype=_dtype, device="METAL", **kwargs)
     buf = cast(Buffer, r.uop.buffer).allocate(external_ptr=mtl_buffer_ptr)
     if byte_offset: buf._buf.offset = byte_offset
