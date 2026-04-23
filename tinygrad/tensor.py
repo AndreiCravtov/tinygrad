@@ -689,7 +689,7 @@ class Tensor(OpMixin):
     base_buf = cast(Buffer, base.buffer).allocate(external_ptr=mtl_buffer_ptr)
     if owner is not None: setattr(base_buf, "_external_owner", owner)
 
-    if byte_offset:
+    if byte_offset or backing_elems != prod(shape):
       view = UOp(Ops.BUFFER_VIEW, _dtype, (base,), (prod(shape), byte_offset // _dtype.itemsize))
       return Tensor._from_uop_unchecked(view.reshape(shape), requires_grad=False)
     return Tensor._from_uop_unchecked(base.reshape(shape), requires_grad=False)
