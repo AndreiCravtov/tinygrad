@@ -129,12 +129,7 @@ class _UnsafeMetalTensorBorrower:
     self._needed_nbytes = prod(shape) * tensor.dtype.itemsize
     self._mtl_buffer_type = type(base_buf._buf.buf)
 
-  def rebind(self, mtl_buffer_ptr:int, *, owner:Any|None=None, byte_offset:int|None=None, buffer_nbytes:int|None=None,
-             shape:tuple[int, ...]|None=None, dtype_name:str|None=None) -> Tensor:
-    if shape is not None and shape != self._shape:
-      raise ValueError(f"borrower was created for shape={self._shape}, got {shape}")
-    if dtype_name is not None and _canonical_interop_dtype_name(dtype_name) != self._dtype_name:
-      raise ValueError(f"borrower was created for dtype={self._dtype_name}, got {dtype_name}")
+  def _raw_rebind(self, mtl_buffer_ptr:int, *, owner:Any|None=None, byte_offset:int|None=None, buffer_nbytes:int|None=None) -> Tensor:
     if (resolved_byte_offset := self._byte_offset if byte_offset is None else byte_offset) != self._byte_offset:
       raise ValueError(f"borrower was created for byte_offset={self._byte_offset}, got {resolved_byte_offset}")
     if (resolved_buffer_nbytes := self._buffer_nbytes if buffer_nbytes is None else buffer_nbytes) is not None:
@@ -151,6 +146,14 @@ class _UnsafeMetalTensorBorrower:
     if owner is not None: setattr(self._base_buf, "_external_owner", owner)
     elif hasattr(self._base_buf, "_external_owner"): delattr(self._base_buf, "_external_owner")
     return self.tensor
+
+  def rebind(self, mtl_buffer_ptr:int, *, shape:tuple[int, ...], dtype_name:str, owner:Any|None=None,
+             byte_offset:int|None=None, buffer_nbytes:int|None=None) -> Tensor:
+    if shape != self._shape:
+      raise ValueError(f"borrower was created for shape={self._shape}, got {shape}")
+    if _canonical_interop_dtype_name(dtype_name) != self._dtype_name:
+      raise ValueError(f"borrower was created for dtype={self._dtype_name}, got {dtype_name}")
+    return self._raw_rebind(mtl_buffer_ptr, owner=owner, byte_offset=byte_offset, buffer_nbytes=buffer_nbytes)
 
 class Tensor(OpMixin):
   """
