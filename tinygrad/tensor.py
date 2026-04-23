@@ -89,7 +89,7 @@ def _masked_setitem(target:Tensor, values:Tensor, mask:Tensor, axes:tuple[int, .
 
 class _UnsafeMetalTensorBorrower:
   """Reusable mutable slot for rebinding one tinygrad tensor wrapper to new Metal storage."""
-  __slots__ = ("tensor", "_base_buf", "_byte_offset", "_buffer_nbytes", "_needed_nbytes", "_mtl_buffer_type")
+  __slots__ = ("tensor", "_base_buf", "_byte_offset", "_buffer_nbytes", "_needed_nbytes", "_mtl_buffer_type", "_shape", "_dtype_name")
 
   def __init__(self, mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
                buffer_nbytes:int|None=None, owner:Any|None=None):
@@ -106,10 +106,16 @@ class _UnsafeMetalTensorBorrower:
     base_buf = cast(Buffer, base_uop.buffer).ensure_allocated()
     self.tensor, self._base_buf = tensor, base_buf
     self._byte_offset, self._buffer_nbytes = byte_offset, buffer_nbytes
+    self._shape, self._dtype_name = shape, tensor.dtype.base.name
     self._needed_nbytes = prod(shape) * tensor.dtype.itemsize
     self._mtl_buffer_type = type(base_buf._buf.buf)
 
-  def rebind(self, mtl_buffer_ptr:int, *, owner:Any|None=None, byte_offset:int|None=None, buffer_nbytes:int|None=None) -> Tensor:
+  def rebind(self, mtl_buffer_ptr:int, *, owner:Any|None=None, byte_offset:int|None=None, buffer_nbytes:int|None=None,
+             shape:tuple[int, ...]|None=None, dtype_name:str|None=None) -> Tensor:
+    if shape is not None and shape != self._shape:
+      raise ValueError(f"borrower was created for shape={self._shape}, got {shape}")
+    if dtype_name is not None and dtype_name != self._dtype_name:
+      raise ValueError(f"borrower was created for dtype={self._dtype_name}, got {dtype_name}")
     if (resolved_byte_offset := self._byte_offset if byte_offset is None else byte_offset) != self._byte_offset:
       raise ValueError(f"borrower was created for byte_offset={self._byte_offset}, got {resolved_byte_offset}")
     if (resolved_buffer_nbytes := self._buffer_nbytes if buffer_nbytes is None else buffer_nbytes) is not None:
