@@ -1,5 +1,6 @@
 # inspired by https://github.com/karpathy/micrograd/blob/master/micrograd/engine.py
 from __future__ import annotations
+from dataclasses import replace
 import time, math, itertools, functools, struct, sys, inspect, pathlib, hashlib, weakref
 from contextlib import ContextDecorator
 from typing import Any, Callable, ClassVar, Sequence, cast, get_args, Literal, ParamSpec, TypeVar, Generic, TYPE_CHECKING
@@ -13,7 +14,7 @@ from tinygrad.gradient import compute_gradient
 from tinygrad.mixin import OpMixin, ReductionStr
 from tinygrad.uop.ops import smax, UOp, Ops, sint, all_metadata, _index_to_concrete_int, Variable, _broadcast_shape
 from tinygrad.schedule import ExecItem, create_linear_with_vars, linear_to_schedule
-from tinygrad.device import Buffer, canonicalize_device
+from tinygrad.device import Buffer, BufferSpec, canonicalize_device
 from tinygrad.engine.realize import run_linear
 from tinygrad.callify import transform_to_call
 
@@ -87,6 +88,7 @@ def _masked_setitem(target:Tensor, values:Tensor, mask:Tensor, axes:tuple[int, .
   return mask.where(values, target)
 
 class _UnsafeMetalTensorBorrower:
+  """Reusable mutable slot for rebinding one tinygrad tensor wrapper to new Metal storage."""
   __slots__ = ("tensor", "_base_buf", "_byte_offset", "_buffer_nbytes", "_needed_nbytes", "_mtl_buffer_type")
 
   def __init__(self, mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
@@ -119,6 +121,8 @@ class _UnsafeMetalTensorBorrower:
           f"buffer has {resolved_buffer_nbytes}"
         )
     self._base_buf._buf.buf = self._mtl_buffer_type(mtl_buffer_ptr)
+    self._base_buf.options = replace(self._base_buf.options, external_ptr=mtl_buffer_ptr) if self._base_buf.options is not None \
+      else BufferSpec(external_ptr=mtl_buffer_ptr)
     if owner is not None: setattr(self._base_buf, "_external_owner", owner)
     elif hasattr(self._base_buf, "_external_owner"): delattr(self._base_buf, "_external_owner")
     return self.tensor
