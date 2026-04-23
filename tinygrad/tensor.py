@@ -133,8 +133,6 @@ class _UnsafeMetalTensorBorrower:
     if (resolved_byte_offset := self._byte_offset if byte_offset is None else byte_offset) != self._byte_offset:
       raise ValueError(f"borrower was created for byte_offset={self._byte_offset}, got {resolved_byte_offset}")
     if (resolved_buffer_nbytes := self._buffer_nbytes if buffer_nbytes is None else buffer_nbytes) is not None:
-      if resolved_buffer_nbytes % self.tensor.dtype.itemsize != 0:
-        raise ValueError(f"buffer_nbytes {resolved_buffer_nbytes} must align to dtype itemsize {self.tensor.dtype.itemsize}")
       if resolved_byte_offset + self._needed_nbytes > resolved_buffer_nbytes:
         raise ValueError(
           f"requested view exceeds backing buffer: need {self._needed_nbytes} bytes at offset {resolved_byte_offset}, "
@@ -677,11 +675,9 @@ class Tensor(OpMixin):
     assert byte_offset % _dtype.itemsize == 0, f"byte_offset {byte_offset} must be aligned to dtype itemsize {_dtype.itemsize}"
     needed_nbytes = prod(shape) * _dtype.itemsize
     if buffer_nbytes is not None:
-      assert buffer_nbytes % _dtype.itemsize == 0, \
-        f"buffer_nbytes {buffer_nbytes} must align to dtype itemsize {_dtype.itemsize}"
       assert byte_offset + needed_nbytes <= buffer_nbytes, \
         f"requested view exceeds backing buffer: need {needed_nbytes} bytes at offset {byte_offset}, buffer has {buffer_nbytes}"
-      backing_elems = buffer_nbytes // _dtype.itemsize
+      backing_elems = ceildiv(buffer_nbytes, _dtype.itemsize)
     else:
       backing_elems = (byte_offset // _dtype.itemsize) + prod(shape)
 
