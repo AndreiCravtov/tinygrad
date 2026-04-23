@@ -86,6 +86,43 @@ def _masked_setitem(target:Tensor, values:Tensor, mask:Tensor, axes:tuple[int, .
   # select from values for each True element in mask else select from target
   return mask.where(values, target)
 
+class _UnsafeMetalTensorBorrower:
+  __slots__ = ("tensor", "_base_buf", "_byte_offset", "_buffer_nbytes", "_needed_nbytes", "_mtl_buffer_type")
+
+  def __init__(self, mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
+               buffer_nbytes:int|None=None, owner:Any|None=None):
+    tensor = Tensor._unsafe_from_metal_buffer_fast(
+      mtl_buffer_ptr,
+      shape,
+      dtype=dtype,
+      byte_offset=byte_offset,
+      buffer_nbytes=buffer_nbytes,
+      owner=owner,
+    )
+    base_uop = tensor.uop.base
+    if base_uop.op is Ops.BUFFER_VIEW: base_uop = base_uop.src[0]
+    base_buf = cast(Buffer, base_uop.buffer).ensure_allocated()
+    self.tensor, self._base_buf = tensor, base_buf
+    self._byte_offset, self._buffer_nbytes = byte_offset, buffer_nbytes
+    self._needed_nbytes = prod(shape) * tensor.dtype.itemsize
+    self._mtl_buffer_type = type(base_buf._buf.buf)
+
+  def rebind(self, mtl_buffer_ptr:int, *, owner:Any|None=None, byte_offset:int|None=None, buffer_nbytes:int|None=None) -> Tensor:
+    if (resolved_byte_offset := self._byte_offset if byte_offset is None else byte_offset) != self._byte_offset:
+      raise ValueError(f"borrower was created for byte_offset={self._byte_offset}, got {resolved_byte_offset}")
+    if (resolved_buffer_nbytes := self._buffer_nbytes if buffer_nbytes is None else buffer_nbytes) is not None:
+      if resolved_buffer_nbytes % self.tensor.dtype.itemsize != 0:
+        raise ValueError(f"buffer_nbytes {resolved_buffer_nbytes} must align to dtype itemsize {self.tensor.dtype.itemsize}")
+      if resolved_byte_offset + self._needed_nbytes > resolved_buffer_nbytes:
+        raise ValueError(
+          f"requested view exceeds backing buffer: need {self._needed_nbytes} bytes at offset {resolved_byte_offset}, "
+          f"buffer has {resolved_buffer_nbytes}"
+        )
+    self._base_buf._buf.buf = self._mtl_buffer_type(mtl_buffer_ptr)
+    if owner is not None: setattr(self._base_buf, "_external_owner", owner)
+    elif hasattr(self._base_buf, "_external_owner"): delattr(self._base_buf, "_external_owner")
+    return self.tensor
+
 class Tensor(OpMixin):
   """
   A `Tensor` is a multi-dimensional matrix containing elements of a single data type.
@@ -624,6 +661,25 @@ class Tensor(OpMixin):
       view = UOp(Ops.BUFFER_VIEW, _dtype, (base,), (prod(shape), byte_offset // _dtype.itemsize))
       return Tensor._from_uop_unchecked(view.reshape(shape), requires_grad=False)
     return Tensor._from_uop_unchecked(base.reshape(shape), requires_grad=False)
+
+  @staticmethod
+  def _unsafe_metal_borrower(mtl_buffer_ptr:int, shape:tuple[int, ...], *, dtype:DTypeLike, byte_offset:int=0,
+                             buffer_nbytes:int|None=None, owner:Any|None=None) -> _UnsafeMetalTensorBorrower:
+    """
+    Create a reusable METAL tensor borrower for repeated aliasing of same-shape
+    buffers with the same byte offset semantics.
+
+    This is intentionally unsafe and only meant for private interop /
+    benchmarking code.
+    """
+    return _UnsafeMetalTensorBorrower(
+      mtl_buffer_ptr,
+      shape,
+      dtype=dtype,
+      byte_offset=byte_offset,
+      buffer_nbytes=buffer_nbytes,
+      owner=owner,
+    )
 
   @staticmethod
   def from_url(url:str, gunzip:bool=False, **kwargs) -> Tensor:
