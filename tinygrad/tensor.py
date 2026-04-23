@@ -87,6 +87,25 @@ def _masked_setitem(target:Tensor, values:Tensor, mask:Tensor, axes:tuple[int, .
   # select from values for each True element in mask else select from target
   return mask.where(values, target)
 
+def _canonical_interop_dtype_name(name:str) -> str:
+  aliases = {
+    "bool": "bool", "bool_": "bool",
+    "char": "int8", "int8": "int8",
+    "unsigned char": "uint8", "uint8": "uint8",
+    "short": "int16", "int16": "int16",
+    "unsigned short": "uint16", "uint16": "uint16",
+    "int": "int32", "int32": "int32",
+    "unsigned int": "uint32", "uint32": "uint32",
+    "long": "int64", "int64": "int64",
+    "unsigned long": "uint64", "uint64": "uint64",
+    "half": "float16", "float16": "float16",
+    "__bf16": "bfloat16", "bfloat16": "bfloat16",
+    "float": "float32", "float32": "float32",
+    "double": "float64", "float64": "float64",
+    "complex64": "complex64",
+  }
+  return aliases.get(name, name)
+
 class _UnsafeMetalTensorBorrower:
   """Reusable mutable slot for rebinding one tinygrad tensor wrapper to new Metal storage."""
   __slots__ = ("tensor", "_base_buf", "_byte_offset", "_buffer_nbytes", "_needed_nbytes", "_mtl_buffer_type", "_shape", "_dtype_name")
@@ -106,7 +125,7 @@ class _UnsafeMetalTensorBorrower:
     base_buf = cast(Buffer, base_uop.buffer).ensure_allocated()
     self.tensor, self._base_buf = tensor, base_buf
     self._byte_offset, self._buffer_nbytes = byte_offset, buffer_nbytes
-    self._shape, self._dtype_name = shape, tensor.dtype.base.name
+    self._shape, self._dtype_name = shape, _canonical_interop_dtype_name(tensor.dtype.base.name)
     self._needed_nbytes = prod(shape) * tensor.dtype.itemsize
     self._mtl_buffer_type = type(base_buf._buf.buf)
 
@@ -114,7 +133,7 @@ class _UnsafeMetalTensorBorrower:
              shape:tuple[int, ...]|None=None, dtype_name:str|None=None) -> Tensor:
     if shape is not None and shape != self._shape:
       raise ValueError(f"borrower was created for shape={self._shape}, got {shape}")
-    if dtype_name is not None and dtype_name != self._dtype_name:
+    if dtype_name is not None and _canonical_interop_dtype_name(dtype_name) != self._dtype_name:
       raise ValueError(f"borrower was created for dtype={self._dtype_name}, got {dtype_name}")
     if (resolved_byte_offset := self._byte_offset if byte_offset is None else byte_offset) != self._byte_offset:
       raise ValueError(f"borrower was created for byte_offset={self._byte_offset}, got {resolved_byte_offset}")
