@@ -153,6 +153,9 @@ class _UnsafeMetalTensorBorrower:
       raise ValueError(f"borrower was created for dtype={self._dtype_name}, got {dtype_name}")
     return self._raw_rebind(mtl_buffer_ptr, owner=owner, byte_offset=byte_offset, buffer_nbytes=buffer_nbytes)
 
+  def clear_owner(self) -> None:
+    if hasattr(self._base_buf, "_external_owner"): delattr(self._base_buf, "_external_owner")
+
 class Tensor(OpMixin):
   """
   A `Tensor` is a multi-dimensional matrix containing elements of a single data type.
